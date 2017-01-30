@@ -1,1 +1,18 @@
-# tareas_intro_datascience_2016
+# Introduction to Data Science
+
+Term: Autumn 2016
+
+Author: S. Mendizabal
+
+
+---
+
+#### • Excercices
+R and Python code from several excercices 
+developed at the Introduction to Data Science course.
+Data is saved in specific files that due to 
+confidentiatlity are not uploaded. 
+
+
+
+**Note:** Python Version 2

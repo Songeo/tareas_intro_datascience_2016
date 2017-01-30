@@ -1,0 +1,362 @@
+---
+title: "Berka Dataset"
+output: 
+    html_notebook:
+        toc: yes
+        toc_depth: 5
+---
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+rm(list = ls())
+
+instalar <- function(paquete) {
+
+    if (!require(paquete,character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)) {
+        install.packages(as.character(paquete), dependecies = TRUE, repos = "http://cran.us.r-project.org")
+        library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    }
+}
+
+paquetes <- c('lubridate', 'magrittr', 'ggvis', 'dplyr', 'tidyr', 'readr', 'rvest', 
+              'ggplot2', 'stringr', 'ggthemes', 'googleVis', 'shiny', 'tibble', 'vcd', 'vcdExtra',
+              'GGally', 'readODS', 'readxl', "RSQLite")
+
+lapply(paquetes, instalar);
+
+theme_set(theme_light())
+```
+
+
+### Berka Dataset
+
+Esquema Entidad-Relación
+
+![Berka dataset](http://lisp.vse.cz/pkdd99/Challenge/data.gif)
+
+
+#### 1. Ejercicio: To Raw
+
+Crea las tablas en sqlite tal que `berka.raw` contenga
+las tablas.
+
+```{bash, eval = T}
+cd data/berka
+for db in *asc;
+do
+table=${db%.*}s
+if [ "$db" = "trans.asc" ]; then
+table="transactions"
+fi
+if [ "$db" = "disp.asc" ]; then
+table="dispositions"
+fi
+echo -e ".separator ';'\n.import ${db} ${table}" | sqlite3 berka.raw
+done
+cp berka.raw ../../alumnos/Songeo/berka
+```
+
+Total de tablas incluídas en `berka.raw`:
+```{r}
+# Datos en R
+berka.sql <- dplyr::src_sqlite(path = "berka/berka.raw")
+src_tbls(berka.sql)
+
+# Lista de tablas de db berka.raw
+berka.l <- lapply(src_tbls(berka.sql), function(tab.nom){
+  tbl(berka.sql, tab.nom)  
+})
+
+names(berka.l) <- src_tbls(berka.sql)
+berka.l.mod <- list()
+```
+
+
+#### 2. Ejercicio: Raw to Clean
+
+- Verifica que cada `account` tenga un `owner`
+
+En total se tienen 18,003 observaciones en la tabla
+de cuentas `accounts`. De la tabla `dispositions` 
+se obtienen los id únicos de cuenta y cliente. 
+Al unir las dos bases, las observaciones aumenta a 
+26,845 sin faltantes en la columna `client_id`
+lo que indica que hay cuentas con dos ids de clientes
+registrados, pero todas las cuentas tienen al 
+menos un cliente asociado. 
+
+```{r}
+# Accounts incluye tabla dispositions
+berka.l.mod$accounts <- berka.l$accounts %>% 
+    filter(account_id != 'account_id') %>% 
+    collect 
+
+tt <- berka.l.mod$accounts %>% 
+    # Union de tablas
+    left_join(
+        # id account y client únicos
+        berka.l$dispositions %>% 
+            dplyr::select(account_id, client_id) %>% 
+            collect %>% unique,
+        by = "account_id") %>% 
+    mutate(nas_cliente = is.na(client_id),
+           conteo = 1) %>% 
+    summarize(nas = sum(nas_cliente),
+              obs = sum(conteo)) 
+
+warning(paste('Faltantes de id clientes:',tt$nas, "\n"))
+warning(paste('Número de observaciones:',tt$obs, "\n"))
+```
+
+
+- Los registros de  `orders` y `loans` están duplicados en `transactions`. 
+Es decir los registros de `order`y `loan` están dentro de  `transactions` (por ejemplo, 
+Los registros de `loan` en `tran`están identificados por el `k_symbol` `LP`)
+- Traduce los campos del checo al inglés.
+
+La recodificacion y modificaciones de `loans` se realiza
+en el inciso asignado a esa tabla más adelante. 
+
+##### Orders
+
+A continuación se recodifica la variable `k_symbol`
+de la tabla `orders`.
+
+
+```{r}
+# Recodificación orders
+berka.l.mod$orders <- berka.l$orders %>% 
+    filter(k_symbol != 'k_symbol') %>% 
+    collect(n = Inf) %>%
+    mutate(k_symbol = recode(k_symbol, 
+                             'LEASING'='leasing', 
+                             'POJISTNE'='insurrance payment',
+                             'SIPO'='household payment',
+                             'UVER'='loan payment')
+    ) %>% 
+    rename(order_amount = amount, order_k_symbol = k_symbol)
+```
+
+
+```{r}
+berka.l.mod$orders %>% 
+    group_by(order_k_symbol) %>% 
+    tally %>% 
+    knitr::kable(align = c('r', 'l'))
+```
+
+
+##### Clients
+
+- En `clients` cambia `BirthNumber` a `sex` y `age`
+y discretizala en: `Youth` (0-24), 
+`Adult` (25-45), `Middle-age` (46-64) y 
+`Senior` (> 65)
+
+Los datos fueron recopilados en 1999, por lo tanto,
+la edad se calcula en años cumplidos al final de 1999.
+
+```{r}
+berka.l.mod$clients <- berka.l$clients %>% 
+    filter(client_id != 'client_id') %>% 
+    collect %>% 
+    mutate(month = as.numeric(str_sub(birth_number, 3,4)),
+           month.rec = ifelse(month>=50, month-50, month), 
+           sex = factor(as.numeric(month >= 50), 
+                        levels = c(0,1), 
+                        labels = c('man', 'woman')), 
+           birthdate = as.Date(paste( str_sub(birth_number, 5,6),
+                         month.rec,
+                         as.numeric(str_sub(birth_number, 1,2)) + 1900, 
+                         sep = "-"), "%d-%m-%Y"),
+           age =  floor( interval(start = birthdate, 
+                           end = as.Date("31/12/1999","%d/%m/%Y") ) /
+               duration(num = 1, units = "years") ),
+           age.interval = cut(age, 
+                              breaks = c(0, 24, 45, 64, 88), 
+                              labels = c("Youth", "Adult", 
+                                         "Middle-age", "Senior"),
+                              include.lowest = T, right = T)
+           ) %>% 
+    dplyr::select(-month, -month.rec) %>% 
+    mutate(birthdate = as.character(birthdate))
+```
+
+```{r, fig.height=3.5}
+berka.l.mod$clients %>% 
+    dplyr::select(sex, age.interval) %>% 
+    gather(var.lab, var.val) %>% 
+    ggplot(., aes(x = var.val)) + 
+    geom_bar() + 
+    facet_grid(~var.lab, scales = 'free', space = 'free') + 
+    theme(axis.text.x = element_text(angle = 90)) + 
+    xlab(NULL)
+```
+
+
+
+##### Dispositions
+
+- En `disposition` cambia de `Dispondent` -> `User` 
+
+```{r}
+berka.l.mod$dispositions <- berka.l$dispositions %>%
+    filter(account_id != 'account_id') %>% 
+    collect() %>% 
+    mutate(type = recode(type, "DISPONENT"='USER'))
+```
+
+```{r}
+berka.l.mod$dispositions %>% 
+    group_by(type) %>% 
+    tally %>% 
+    knitr::kable(align = c('r','l'))
+```
+
+
+##### Loans
+
+- En `loan` discretiza usando alguna heuristica `amount`, `duration` 
+y `payments`
+
+Las tres variables se discretizan por cuartiles, es decir,
+se crean cuatro grupos con aproximadamente el
+mismo número de observaciones. Esto ayudará a encontrar
+la distribución de los montos, número de pagos mensuales y 
+duración de crédito que. 
+
+```{r}
+berka.l.mod$loans <- berka.l$loans %>% 
+    filter(loan_id != 'loan_id') %>% 
+    collect %>% 
+    mutate(amount = as.numeric(as.character(amount)),
+           duration = as.numeric(as.character(duration)),
+           payments = as.numeric(as.character(payments)),
+           amount_disc = cut_number(amount/1e3, n = 4),
+           duration_disc = cut_number(duration, n = 3),
+           payments_disc = cut_number(payments, n = 4)
+           ) %>% 
+    rename(loan_amount = amount, 
+           loan_duration = duration, 
+           loan_payments = payments)
+```
+
+```{r}
+berka.l.mod$loans %>% 
+    dplyr::select(amount_disc, duration_disc, payments_disc) %>% 
+    gather(var.lab, var.val) %>% 
+    ggplot(., aes(x = var.val)) + 
+    geom_bar() + 
+    facet_grid(~var.lab, scales = 'free', space = 'free') + 
+    theme(axis.text.x = element_text(angle = 90)) + 
+    xlab(NULL)
+```
+
+
+##### Transactions
+
+- En `transaction` traduce la columna `type`, `operation`, `k_symbol`
+
+
+```{r}
+berka.l.mod$transactions <- berka.l$transactions %>%
+    filter(account_id != 'account_id') %>% 
+    collect(n = Inf) %>%
+    mutate(type = recode(type, 
+                         'PRIJEM'='credit', 
+                         'VYDAJ'='withdrawl',
+                         'VYBER'='withdrawal in cash'),
+           operation = recode(operation, 
+                              "VYBER KARTOU" = 'credit card withdrawal',
+                              "VKLAD" = "credit in cash",
+                              "PREVOD Z UCTU" = "collection from another bank",
+                              "VYBER" = "withdrawal in cash",
+                              "PREVOD NA UCET" = "remittance to another bank"),
+           k_symbol = recode(k_symbol, 
+                              'POJISTNE'='insurrance payment',
+                              'SLUZBY' = 'payment for statement',
+                              'UROK' = 'interest credited',
+                              'SANKC. UROK' = 'sanction interest if negative balance',
+                              'SIPO' = 'household',
+                              'DUCHOD' = 'old-age pension',
+                              'UVER' = 'loan payment',
+                              " " = "")
+           ) %>% 
+    rename(trans_amount = amount, trans_k_symbol = k_symbol, trans_balance = balance)
+```
+
+
+
+```{r}
+berka.l.mod$transactions %>% 
+    dplyr::select(trans_k_symbol, type, operation) %>% 
+    gather() %>% 
+    group_by(key, value) %>% 
+    tally %>% 
+    knitr::kable(align = c('r', 'r', 'c'))
+```
+
+
+
+
+##### Districts and Cards
+
+La tabla `districts` se descarta de la lista.
+La tabla `cards` se agrega con el 
+filtro de variables 
+
+```{r}
+berka.l.mod$cards <- berka.l$cards %>% 
+    filter(disp_id != 'disp_id') %>% 
+    collect 
+```
+
+
+
+#### 3. Ejercicio: Names and Id's
+
+- Ajustamos los nombres de las tablas a plural, los `*_id` a singular.
+
+A continuación se presentan
+los nombres de las tablas y los nombres de
+cada `id` por tabla.
+
+```{r}
+lapply(berka.l.mod, function(elem){
+    colnames(elem)[str_detect(colnames(elem), "_id")]
+})
+```
+
+
+#### 4. Ejercicio: Save Clean
+
+- Guardemos los datos en `berka.clean`
+
+```{r, eval = T}
+# create src
+berka_clean <- src_sqlite( "berka/berka.clean", create = TRUE)
+# por tabla
+tt <- sapply(sort(names(berka.l.mod)), function(nom){
+    print(nom)
+    df <- berka.l.mod[[nom]] %>% tbl_df()
+    # create table
+    copy_to(berka_clean, df, nom, temporary = FALSE)
+    # insert to db
+    db_insert_into( con = berka_clean$con, table = nom, values = df)
+    nom
+})
+```
+
+
+
+```{r, eval=F}
+berka.clean.sql <- dplyr::src_sqlite(path = "berka/berka.clean")
+berka.clean.l <- lapply(src_tbls(berka.clean.sql), function(tab.nom){
+  tbl(berka.clean.sql, tab.nom)  
+})
+names(berka.clean.l) <- src_tbls(berka.clean.sql)
+```
+
+
+
+

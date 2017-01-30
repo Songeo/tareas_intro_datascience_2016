@@ -1,0 +1,276 @@
+---
+title: "Titanic Dataset"
+output: 
+    html_notebook:
+        toc: yes
+        toc_depth: 4
+---
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+rm(list = ls())
+
+instalar <- function(paquete) {
+
+    if (!require(paquete,character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)) {
+        install.packages(as.character(paquete), dependecies = TRUE, repos = "http://cran.us.r-project.org")
+        library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    }
+}
+
+paquetes <- c('lubridate', 'magrittr', 'ggvis', 'dplyr', 'tidyr', 'readr', 'rvest', 
+              'ggplot2', 'stringr', 'ggthemes', 'googleVis', 'shiny', 'tibble', 'vcd', 'vcdExtra',
+              'GGally', 'readODS', 'readxl', "RSQLite")
+
+lapply(paquetes, instalar);
+
+theme_set(theme_light())
+```
+
+
+
+### Titanic Dataset
+
+
+#### Extracción y conversión de datos
+
+```{r eval = F}
+if( sum(str_detect(list.files("titanic/"), ".rds")) != 11){
+    titanic_path <- '../../data/Titanic/titanic.ods'
+    ds_names <- ods_sheets(titanic_path)
+    
+    save_sheet <- function(sheet_name) {
+        file_name <-  paste("titanic/", clean_sheet_name(sheet_name), ".rds", sep = "")
+        saveRDS(object = read_ods(titanic_path, sheet = sheet_name), file = file_name)
+    }
+    
+    clean_sheet_name <- function(sheet_name) {
+        str_to_lower( str_replace_all( 
+            str_replace_all(string=sheet_name, pattern=" ", replace="_"), 
+            pattern="'", replace="")
+            )
+    }
+    sapply(ods_sheets(titanic_path), save_sheet)
+}else{
+    warning("Los tablas parecen ya estar cargadas en la carpeta titanic\n")
+}
+```
+
+
+Cargar datos desde `.rds`
+
+```{r}
+rds_files <- dir("titanic", pattern = "*.rds", full.names = T)
+ds <- lapply(rds_files, read_rds)
+names(ds) <- lapply(rds_files, basename)
+names(ds)
+```
+
+
+
+#### Unificar data sets
+
+- En algunos *data sets* se agregaron columnas de más.
+Crea un método para unificar los *data sets* en uno solo.
+
+```{r}
+ds <- ds[-which(lapply(lapply(ds, names), length) == 2)]
+unique(lapply(ds, names))
+num_cols <- min(unlist(lapply(lapply(ds, names), length)) )
+warning( paste("Tablas sólo con", num_cols, "columnas\n"))
+```
+
+Se unen las tablas que complen con la condición 
+de tener 11 columnas y se unen por renglón para
+construir la base `titanic`.
+
+```{r}
+titanic <- dplyr::bind_rows(ds) %>% 
+    dplyr::select(1:num_cols) %>% 
+    tbl_df()
+titanic %>% glimpse()
+```
+
+
+
+#### Nuevas variables
+
+- Genera las siguientes variables: `survived`, `name`, `last_name`, `sex`
+
+```{r}
+titanic %<>% 
+    tidyr::separate(Name, c("last_name", "name"), 
+                    sep = ",", extra="drop") %>%
+    mutate(survived = as.numeric(!is.na(Boat)), 
+           # encuentra el primer espcacio en blanco y pon ','
+           name = str_replace(str_trim(name), "[ ]", ",")
+           ) %>% 
+    tidyr::separate(name, c("title", "name_only"), 
+                    sep = ",", extra="drop", remove = F) %>% 
+    mutate(sex = factor( 
+        tolower(str_trim(title)) %in% 
+            c('miss', "mrs", "mme.", "lucy", "mlle", "doña", "Ms"),
+        levels = c(F, T), labels = c("Man", "Woman") )
+           ) %>% 
+    dplyr::select(-name_only) 
+```
+
+
+- Agrega una columna de `age` que sea categórica
+Definiremos tres categorías: `infante` si es menor de 18 años, `adulto` entre 18 y 65
+y `adulto mayor` si es mayor a 65
+
+```{r}
+titanic %<>% 
+    mutate(age.num0 = parse_number(Age), 
+           age.num = ifelse(str_detect(Age, "m"), age.num0/12, age.num0),
+           age.ranges = cut_width(age.num, width = 6, boundary = 0), 
+           age.cat = cut(age.num, breaks = c(0, 18, 65, 100), 
+                         labels = c('infant', 'adult', 'senior'),
+                         include.lowest = T)
+           ) %>% 
+    dplyr::select(-age.num0) 
+
+ggplot(filter(titanic, !is.na(age.cat)), 
+              aes(x = age.ranges, 
+                    fill = factor(survived))) + 
+    geom_bar(position = 'stack') + 
+    theme(axis.text.x = element_text(angle = 90))  +
+    guides(fill = guide_legend(title = 'Survived'))+ 
+    xlab('Age Categories') + facet_grid(~age.cat, scales = 'free_x', space = 'free_x')
+```
+
+
+#### Precios y supervivencia
+
+- Arregla la columna de precio
+
+```{r, fig.height=3.5}
+titanic %<>% 
+    mutate(Fare = str_trim(Fare)) %>% 
+    separate(Fare, c('pounds', 'shills', 'pence'), sep = " ", remove = F) %>% 
+    mutate(pence = ifelse(str_detect(shills, "d"), shills, pence),
+           shills = ifelse(str_detect(shills, "d"), NA, shills), 
+           pounds = parse_number(pounds))
+
+ggplot(titanic, aes( x= pounds)) +
+    geom_histogram(bins = 35)
+```
+
+- Ajusta a precios del día de hoy (Por ejemplo usa esta [página](http://inflation.stephenmorley.org/))
+¿En que clase hubieras viajado? ¿Cuál era tu probilidad de supervivencia?
+
+```{r, fig.height=3, fig.width=10}
+tipo.cambio.1912 <- 106
+tipo.cambio.mxn <- 23.15
+
+titanic %<>% 
+    mutate(pounds.today = pounds*tipo.cambio.1912, 
+           pesos.today = pounds*tipo.cambio.1912*tipo.cambio.mxn)
+
+ggplot(filter(titanic , !is.na(pesos.today)), 
+       aes(x = `Class/Dept`, y = pesos.today)) + 
+    geom_boxplot() + 
+    coord_flip() + 
+    scale_y_continuous(breaks = seq(0, 1300000, 25000)) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 0)) + 
+    xlab('Costo en pesos al día de hoy')
+```
+
+Considerando la siguiente tabla que 
+muestra los precios de ticke por clase
+para el costo promedio, 
+la mediana del costo y el tercer cuartil en
+pesos mexicanos al día de hoy, probablemente, 
+tenga que comprar de tercera clase.
+
+```{r}
+filter(titanic , !is.na(pesos.today)) %>% 
+    group_by(`Class/Dept`) %>% 
+    summarize(promedio = mean(pesos.today, na.rm = T),
+              q50 = median(pesos.today, na.rm = T),
+              q75 = quantile(pesos.today, .75, na.rm = T)) %>% 
+    knitr::kable(digits = c(0,0,0,0))
+```
+
+
+La probabilidad de supervivencia se muestra 
+a continuación. En la gráfica se puede ver que 
+la probabilidad de sobrevivir por edad,
+sexo y clase. 
+
+```{r}
+ggplot(filter(titanic , 
+              !is.na(pesos.today), 
+              !is.na(age.ranges)), 
+       aes(x = `Class/Dept`, 
+           fill = factor(survived) ) ) +
+    geom_bar(position = 'fill') + 
+    facet_grid(sex~age.cat) + 
+    theme(axis.text.x = element_text(angle = 90))
+```
+
+
+En mi caso por ser mujer adulta, viajando 
+en tercera clase, mi probabilidad de 
+supervivencia es de 43%. 
+
+```{r}
+filter(titanic , !is.na(pesos.today)) %>% 
+    group_by(`Class/Dept`, survived, sex, age.cat) %>% 
+    tally %>% 
+    group_by(`Class/Dept`, sex, age.cat) %>% 
+    mutate(prop = round(100*n/sum(n)) ) %>% 
+    filter(survived == 1) %>% 
+    dplyr::select(`Class/Dept`, sex, age.cat, prop) %>% 
+    spread(sex, prop) %>% 
+    arrange(age.cat) %>% 
+    rename(`Age Category` = age.cat) %>% 
+    knitr::kable(align = c('r','l','c','c'))
+```
+
+
+#### Botes salvavidas
+
+- Observando la distribución de botes que se muestra en la figura
+¿Qué puedes decir sobre como se utilizaron?
+¿Coincide con la película de Titanic de James Cameron?
+
+Considerando la posición de los botes de 
+[wikipedia](https://en.wikipedia.org/wiki/Lifeboats_of_the_RMS_Titanic),
+en general los botes de la parte trasera fueron ocupados por un 
+mayor número de personas. Aunque los primeros botes que salieron 
+se localizaban en la parte frontal. Por lo tanto, yo considero 
+que sí coincide con la película de James Cameron. 
+
+```{r, fig.height=2, fig.width=10}
+tab <- titanic %>%
+    group_by(Boat) %>%
+    dplyr::summarise(n=n()) %>%
+    filter(!is.na(Boat)) %>% 
+    arrange(desc(n)) %>% 
+    mutate(side = ifelse(parse_number(Boat) %% 2 == 0, 'port',  'stern'),
+           side = factor(
+               ifelse(Boat %in% c('B','D', 'A','C'), 'center', side),
+               levels = c('port', 'center', 'stern')),
+           boat = factor(Boat, levels = c(LETTERS[1:4], 16:1)) )
+
+gg <- ggplot(tab, aes(x = boat, y = side)) + 
+    geom_tile(aes(fill = n)) + 
+    geom_label(aes( label = n), color = 'gray20', size = 2.5) + 
+    scale_fill_continuous(low= '#DDEFFD', high = '#224662') +
+    ylab('Side of the boat') + 
+    xlab('Stern and Bow of the Boat')
+gg
+```
+
+
+
+#### Guardar base final
+
+```{r}
+saveRDS(titanic, "titanic/titanic.clean.RDS")
+```
+
+
+

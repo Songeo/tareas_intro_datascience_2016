@@ -1,0 +1,270 @@
+---
+title: "Modelos"
+output: 
+    html_notebook:
+        toc: yes
+        toc_depth: 5
+---
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+rm(list = ls())
+
+instalar <- function(paquete) {
+
+    if (!require(paquete,character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)) {
+        install.packages(as.character(paquete), 
+                         dependecies = TRUE, 
+                         repos = "http://cran.us.r-project.org")
+        library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    }
+}
+
+paquetes <- c('lubridate', 'magrittr', 'ggvis', 'dplyr', 'tidyr', 'readr', 'rvest', 
+              'ggplot2', 'stringr', 'ggthemes', 'googleVis', 'shiny', 'tibble', 'vcd', 'vcdExtra',
+              'GGally', 'readODS', 'readxl', "RSQLite", "feather")
+
+sapply(paquetes, instalar); 
+theme_set(theme_light())
+```
+
+
+
+### Modelos
+
+Las funciones se encuentran en el script `utils.R` que se
+llama a continuación.
+```{r}
+source('utils.R')
+```
+
+
+Para los siguientes ejercicios se toma la 
+base de datos `diamonds` con las siguientes variables
+```{r, echo=FALSE}
+diamonds %>% summary()
+```
+
+La matriz de correlación entre variables numéricas de los 
+datos se presenta a continuación:
+    ```{r, echo=FALSE, fig.height=3}
+cor.mat <- cor(diamonds[, sapply(diamonds, class)[sapply(diamonds, class) %in%
+                                                      c('numeric', 'integer', 'double')] %>%
+                            names])
+tab.corr <- cor.mat %>%
+    tbl_df() %>%
+    mutate(rows = colnames(cor.mat)) %>%
+    gather(cols, corr, -rows)
+gg <- ggplot(tab.corr, aes(x = rows, y = cols, fill = corr)) +
+    geom_tile(alpha =.7) +
+    geom_text(aes(label = round(corr, 2), color = corr)) +
+    scale_fill_continuous(low = 'white', high = "#132B43") +
+    scale_color_continuous(high = 'white', low = "#132B43") +
+    xlab(NULL) +
+    ylab(NULL) +
+    theme(legend.position = 'none',
+          plot.title = element_text(hjust=0, size=9),
+          axis.text.x = element_text(angle = 90, hjust = 1)) +
+    coord_fixed(ratio = .65)
+print(gg)
+```
+
+
+
+#### 2. Ejercicio: Low variability
+
+Implementar el método low_variability() en utils.r.
+La función es la siguiente:
+```{r, echo = T}
+body(low_variability)
+```
+
+Dado que el rango intercuartílico es sensible a 
+la escala de las variables, es preferible escalar
+las variables.
+```{r}
+vars.nums <- names(diamonds)[sapply(diamonds, class) %in% c('numeric')]
+diamonds[, vars.nums] <- scale(diamonds[, vars.nums], center = T, scale = T)
+```
+
+
+A continuación se presenta el filtro por low variability
+para los datos antes mencionados. 
+```{r}
+diamonds.low <- low_variability(data = diamonds, limit = 0.90)
+selec.low <- names(diamonds.low)
+selec.low
+```
+
+
+
+#### 3. Ejercicio: Correlation filtering
+
+Implementar el método correlation_filtering() en utils.r.
+
+La función se presenta a continuación. 
+```{r, echo = T}
+body(correlation_filtering)
+```
+
+El resultado de la función se en la base de datos selecciona las
+variables siguientes.
+```{r, warning=FALSE}
+diamonds.cor <- correlation_filtering(df = diamonds, limit = 0.90)
+selec.cor <- names(diamonds.cor)
+selec.cor
+```
+
+En la matriz de correlaciones presentada al inicio, se puede ver que las
+variables `depth`, `table` y `price` son las que menor correlación tienen.
+Visualmente son variables con colores más claros entre ellas. 
+
+
+
+#### 4. Ejercicio: FCB filtering
+
+Implementar el método FCB_filtering() en utils.r.
+
+La función es
+```{r, echo = F}
+body(FCB_filtering)
+```
+
+
+El resultado de la función se en la base de datos selecciona las
+variables siguientes.
+```{r}
+diamonds.fcb <- FCB_filtering(dat = diamonds, var.salida = "y", threshold = .5)
+selec.fcb <- names(diamonds.fcb)
+selec.fcb
+```
+
+En este caso, considerando la variable dependiente `y`, podemos ver que 
+las más correlacionadas son `x`, `z`, `price` y `carat`. Sin embargo, 
+la correlación entre ellas mismas es demasiado alta por lo que se excluyen
+de la selección. Únicamente se mantiene `x`, `table`y `depth`. Esta selección
+no es estricta  ya que la correlación con `y` de las últimas dos variable mencionadas
+es baja. 
+
+
+#### 5. Ejercicio: Forward filtering
+
+Implementar el método forward_filtering() en utils.r.
+
+La función usa regresión lineal como modelo para 
+la estimación y considera el error cuadrático medio. 
+A continuación, se presenta la función.
+```{r, echo = F}
+body(forward_filtering)
+```
+
+
+Aplicando la funció al dataset `diamonds`con una diferencia
+de error respecto al modelo anterior de .1 se obtienen 
+las siguientes variables. 
+```{r}
+selec.fwd <- forward_filtering(dat = diamonds,
+                                      var.salida = 'y',
+                                      threshold = .1)
+selec.fwd
+```
+
+
+De nuevo consideramos como variable dependiente a `y` y en este caso 
+la selección de variables es `x` y `z`. Estas variables como se puede 
+ver en el mapa de correlaciones son las relacionadas con la variable
+`y` y por lo tanto, son las que más aportan al intentar modelarla. 
+
+
+\bigskip
+
+##### Conclusión:
+
+Finalmente, se comparan las variables seleccionadas 
+en cada método de filtro. 
+```{r, echo=F}
+selec.low
+```
+```{r, echo=F}
+selec.cor
+```
+```{r, echo=F}
+selec.fcb
+```
+```{r, echo=F}
+selec.fwd
+```
+
+Los resultados varian bastante entre métodos de filtrado, a pesar de las condiciones 
+y límites que se introduzan como parámetros. Es importante tener en mente la finalidad
+de la selección de atributos y entender la relación de las variables en un 
+análisis descriptivo previo. Ya que al quitar variables, es importante el saber porque. 
+
+
+
+
+\bigskip
+
+
+#### 10. Ejercicio
+
+Abre Rstudio y guarda el data.frame de Titanic y guárdalo 
+como archivo feather y en una base de datos sqlite.
+
+**Feather**
+```{r, eval = F}
+titanic <- readRDS("titanic/titanic.RDS") 
+write_feather(titanic, "modelos/titanic.feather")
+```
+
+
+
+**Sqlite3**
+```{r, eval = F}
+my_db <- src_sqlite(path = "modelos/titanic.sqlite3", create = T)
+titanic_sqlite <- copy_to(my_db, titanic, temporary = FALSE)
+```
+
+
+
+
+
+**Datasets: Iris y Diamonds**
+```{r, eval = F}
+write_feather(iris, "modelos/iris.feather")
+summary(iris)
+```
+
+```{r, eval = F}
+write_feather(diamonds, "modelos/diamonds.feather")
+summary(diamonds)
+```
+
+**Dataset: Titanic Pipe**
+```{r, eval = F}
+titanic <- readRDS("titanic/titanic.RDS")
+titanic <- titanic %>% 
+    rename(Class = `Class/Dept`) %>% 
+    dplyr::select(age.num, Class, Ticket, Group, 
+                  Joined, Job, Boat, sex, 
+                  survived, pesos.today, pounds) %>% 
+    mutate(Class = ifelse(is.na(parse_number(Class)), 4, parse_number(Class)),
+           Ticket = parse_number(Ticket), 
+           Ticket = ifelse( is.na(Ticket), 1, Ticket), 
+           Group = as.numeric(factor(Group)), 
+           Group = ifelse(is.na(Group), max(Group, na.rm = T), Group),
+           Joined = as.numeric(factor(Joined)),
+           Joined = ifelse(is.na(Joined), max(Joined, na.rm = T), Joined),
+           Job = as.numeric(factor(Job)),
+           Job = ifelse(is.na(Job), max(Job, na.rm = T), Job),
+           Boat = as.numeric(factor(Boat)),
+           Boat = ifelse(is.na(Boat), max(Boat, na.rm = T), Boat),
+           sex = as.numeric(factor(sex)),
+           sex = ifelse(is.na(sex), max(sex, na.rm = T), sex) ) %>% 
+    rename(pesostoday = pesos.today, 
+           age=age.num) %>% 
+    na.omit()
+write_feather(titanic, "modelos/titanicpipe.feather")
+summary(titanic)
+```
+
