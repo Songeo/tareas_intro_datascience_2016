@@ -8,7 +8,7 @@ Author: S. Mendizabal
 ---
 
 #### • Excercices
-R and Python code from several excercices 
+R Notebooks and Python code from several excercices 
 developed at the Introduction to Data Science course.
 Data is saved in specific files that due to 
 confidentiatlity are not uploaded. 
